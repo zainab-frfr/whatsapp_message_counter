@@ -23,35 +23,6 @@ st.set_page_config(
 
 
 # ============================================================
-# BLUE PROCESS BUTTON
-# ============================================================
-
-st.markdown(
-    """
-    <style>
-
-    div.stButton > button {
-        background-color: #0068C9;
-        color: white;
-        border: none;
-        border-radius: 6px;
-        height: 42px;
-        font-weight: 600;
-    }
-
-    div.stButton > button:hover {
-        background-color: #0055A8;
-        color: white;
-        border: none;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# ============================================================
 # TITLE
 # ============================================================
 
@@ -64,6 +35,10 @@ st.title("WhatsApp Message Counter")
 
 def parse_whatsapp_chat(uploaded_file):
 
+    # --------------------------------------------------------
+    # Create temporary directory
+    # --------------------------------------------------------
+
     temp_dir = tempfile.mkdtemp()
 
     zip_path = os.path.join(
@@ -71,19 +46,36 @@ def parse_whatsapp_chat(uploaded_file):
         "whatsapp_chat.zip"
     )
 
-    # Save ZIP
-    with open(zip_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
 
+    # --------------------------------------------------------
+    # Save uploaded ZIP
+    # --------------------------------------------------------
+
+    with open(zip_path, "wb") as f:
+
+        f.write(
+            uploaded_file.getbuffer()
+        )
+
+
+    # --------------------------------------------------------
     # Extract ZIP
+    # --------------------------------------------------------
+
     with zipfile.ZipFile(
         zip_path,
         "r"
     ) as zip_ref:
 
-        zip_ref.extractall(temp_dir)
+        zip_ref.extractall(
+            temp_dir
+        )
 
+
+    # --------------------------------------------------------
     # Find TXT files
+    # --------------------------------------------------------
+
     txt_files = []
 
     for root, dirs, files in os.walk(temp_dir):
@@ -99,18 +91,32 @@ def parse_whatsapp_chat(uploaded_file):
                     )
                 )
 
+
     if not txt_files:
 
         raise ValueError(
             "No WhatsApp chat text file found."
         )
 
-    # Prefer normal WhatsApp *_chat.txt file
+
+    # --------------------------------------------------------
+    # Select WhatsApp chat file
+    # --------------------------------------------------------
+
+    # WhatsApp normally names exported chats:
+    #
+    #     _chat.txt
+    #
+    # Prefer this if multiple TXT files exist.
+
     preferred_files = [
+
         f
         for f in txt_files
         if "_chat.txt" in os.path.basename(f).lower()
+
     ]
+
 
     if preferred_files:
 
@@ -120,7 +126,11 @@ def parse_whatsapp_chat(uploaded_file):
 
         chat_file = txt_files[0]
 
+
+    # --------------------------------------------------------
     # Read chat file
+    # --------------------------------------------------------
+
     try:
 
         with open(
@@ -141,16 +151,28 @@ def parse_whatsapp_chat(uploaded_file):
 
             lines = f.readlines()
 
+
+    # --------------------------------------------------------
     # WhatsApp message pattern
+    # --------------------------------------------------------
+
     message_pattern = re.compile(
+
         r"^(\d{1,2}/\d{1,2}/\d{4}),\s+"
         r"(\d{1,2}:\d{2})\s+-\s+"
         r"(.*)$"
+
     )
+
+
+    # --------------------------------------------------------
+    # Parse messages
+    # --------------------------------------------------------
 
     messages = []
 
     current_message = None
+
 
     for raw_line in lines:
 
@@ -158,9 +180,15 @@ def parse_whatsapp_chat(uploaded_file):
             "\n\r"
         )
 
+
         match = message_pattern.match(
             line
         )
+
+
+        # ----------------------------------------------------
+        # New WhatsApp message
+        # ----------------------------------------------------
 
         if match:
 
@@ -171,23 +199,39 @@ def parse_whatsapp_chat(uploaded_file):
                     current_message
                 )
 
+
             date_str = match.group(1)
+
             time_str = match.group(2)
+
             content = match.group(3)
+
+
+            # ------------------------------------------------
+            # Convert date/time
+            # ------------------------------------------------
 
             try:
 
                 message_datetime = datetime.strptime(
+
                     f"{date_str}, {time_str}",
+
                     "%d/%m/%Y, %H:%M"
+
                 )
 
             except ValueError:
 
                 current_message = None
+
                 continue
 
-            # Separate sender and message
+
+            # ------------------------------------------------
+            # Separate sender from message
+            # ------------------------------------------------
+
             if ": " in content:
 
                 sender, message_text = content.split(
@@ -195,38 +239,64 @@ def parse_whatsapp_chat(uploaded_file):
                     1
                 )
 
+
                 current_message = {
+
                     "datetime": message_datetime,
+
                     "date": message_datetime.date(),
+
                     "sender": sender.strip(),
+
                     "message": message_text
+
                 }
+
 
             else:
 
                 # WhatsApp system message
+
                 current_message = {
+
                     "datetime": message_datetime,
+
                     "date": message_datetime.date(),
+
                     "sender": None,
+
                     "message": content
+
                 }
+
+
+        # ----------------------------------------------------
+        # Multiline message
+        # ----------------------------------------------------
 
         else:
 
-            # Multiline message
             if current_message is not None:
 
                 current_message["message"] += (
                     "\n" + line
                 )
 
+
+    # --------------------------------------------------------
     # Save final message
+    # --------------------------------------------------------
+
     if current_message is not None:
 
         messages.append(
             current_message
         )
+
+
+    # --------------------------------------------------------
+    # Validate messages
+    # --------------------------------------------------------
 
     if not messages:
 
@@ -234,14 +304,24 @@ def parse_whatsapp_chat(uploaded_file):
             "No messages found in the WhatsApp chat."
         )
 
+
+    # --------------------------------------------------------
+    # Create dataframe
+    # --------------------------------------------------------
+
     df = pd.DataFrame(
         messages
     )
 
-    # Remove system messages
+
+    # --------------------------------------------------------
+    # Remove WhatsApp system messages
+    # --------------------------------------------------------
+
     df = df[
         df["sender"].notna()
     ].copy()
+
 
     if df.empty:
 
@@ -249,11 +329,12 @@ def parse_whatsapp_chat(uploaded_file):
             "No user messages found in the WhatsApp chat."
         )
 
+
     return df
 
 
 # ============================================================
-# CREATE EXCEL
+# CREATE EXCEL FILE
 # ============================================================
 
 def create_excel(
@@ -272,22 +353,33 @@ def create_excel(
         filtered_df["date"]
     )
 
+
     result.index.name = "Number"
 
+
+    # Convert date columns to datetime
     result.columns = pd.to_datetime(
         result.columns
     )
 
+
+    # Sort dates chronologically
     result = result.sort_index(
         axis=1
     )
 
+
+    # Sort numbers alphabetically
     result = result.sort_index()
 
+
+    # Fill missing combinations with zero
     result = result.fillna(
         0
     ).astype(int)
 
+
+    # Put Number back as normal column
     result = result.reset_index()
 
 
@@ -312,15 +404,24 @@ def create_excel(
 
     )
 
+
     summary = summary.rename(
+
         columns={
+
             "sender": "Number"
+
         }
+
     )
 
+
     summary = summary.sort_values(
+
         by="Message Count",
+
         ascending=False
+
     ).reset_index(
         drop=True
     )
@@ -347,15 +448,22 @@ def create_excel(
 
     )
 
+
     daily_summary = daily_summary.rename(
+
         columns={
+
             "date": "Date"
+
         }
+
     )
+
 
     daily_summary["Date"] = pd.to_datetime(
         daily_summary["Date"]
     )
+
 
     daily_summary = daily_summary.sort_values(
         by="Date"
@@ -363,33 +471,53 @@ def create_excel(
 
 
     # ========================================================
-    # CREATE EXCEL
+    # CREATE EXCEL IN MEMORY
     # ========================================================
 
     output = BytesIO()
 
+
     with pd.ExcelWriter(
+
         output,
+
         engine="openpyxl"
+
     ) as writer:
 
+
         result.to_excel(
+
             writer,
+
             sheet_name="Date x Number",
+
             index=False
+
         )
+
 
         summary.to_excel(
+
             writer,
+
             sheet_name="Summary by Number",
+
             index=False
+
         )
 
+
         daily_summary.to_excel(
+
             writer,
+
             sheet_name="Daily Summary",
+
             index=False
+
         )
+
 
     output.seek(0)
 
@@ -402,12 +530,20 @@ def create_excel(
         output
     )
 
+
     for ws in wb.worksheets:
 
-        # Freeze header
+        # ----------------------------------------------------
+        # Freeze top row
+        # ----------------------------------------------------
+
         ws.freeze_panes = "A2"
 
+
+        # ----------------------------------------------------
         # Bold headers
+        # ----------------------------------------------------
+
         for cell in ws[1]:
 
             cell.font = Font(
@@ -418,7 +554,11 @@ def create_excel(
                 horizontal="center"
             )
 
-        # Auto-width
+
+        # ----------------------------------------------------
+        # Auto-width columns
+        # ----------------------------------------------------
+
         for column in ws.columns:
 
             max_length = 0
@@ -427,18 +567,24 @@ def create_excel(
                 column[0].column_letter
             )
 
+
             for cell in column:
 
                 try:
 
+                    cell_length = len(
+                        str(cell.value)
+                    )
+
                     max_length = max(
                         max_length,
-                        len(str(cell.value))
+                        cell_length
                     )
 
                 except Exception:
 
                     pass
+
 
             ws.column_dimensions[
                 column_letter
@@ -448,235 +594,260 @@ def create_excel(
             )
 
 
-    # Format dates in first sheet
+    # ========================================================
+    # FORMAT DATES
+    # ========================================================
+
+    # First sheet
     ws = wb["Date x Number"]
+
 
     for cell in ws[1][1:]:
 
         cell.number_format = "dd/mm/yyyy"
 
 
-    # Format dates in Daily Summary
+    # Daily Summary
     ws = wb["Daily Summary"]
+
 
     for cell in ws["A"][1:]:
 
         cell.number_format = "dd/mm/yyyy"
 
 
-    # Save final workbook
+    # ========================================================
+    # SAVE FINAL EXCEL
+    # ========================================================
+
     final_output = BytesIO()
+
 
     wb.save(
         final_output
     )
 
+
     final_output.seek(0)
+
 
     return final_output
 
 
 # ============================================================
-# UPLOAD ZIP
+# UPLOAD ZIP FILE
 # ============================================================
 
 uploaded_file = st.file_uploader(
+
     "Upload ZIP file",
+
     type=["zip"]
+
 )
 
 
 # ============================================================
-# DATE RANGE
+# AFTER FILE UPLOAD
 # ============================================================
-
-st.subheader(
-    "Select Date Range"
-)
-
-
-# Current date
-today = date.today()
-
-
-# Five years ago
-five_years_ago = (
-    today - relativedelta(years=5)
-)
-
-
-# ============================================================
-# DATE PICKERS
-# ============================================================
-
-col1, col2 = st.columns(2)
-
-
-with col1:
-
-    start_date = st.date_input(
-        "Start Date",
-        value=today,
-        min_value=five_years_ago,
-        max_value=today
-    )
-
-
-with col2:
-
-    end_date = st.date_input(
-        "End Date",
-        value=today,
-        min_value=five_years_ago,
-        max_value=today
-    )
-
-
-# ============================================================
-# PROCESS BUTTON
-# ============================================================
-
-# Only show Process once ZIP + dates are available
 
 if uploaded_file is not None:
 
-    if start_date is not None and end_date is not None:
 
-        # Center the button
-        button_col1, button_col2, button_col3 = st.columns(
-            [1, 2, 1]
+    # ========================================================
+    # READ CHAT
+    # ========================================================
+
+    try:
+
+        df = parse_whatsapp_chat(
+            uploaded_file
         )
 
-        with button_col2:
+    except Exception:
 
-            process_clicked = st.button(
-                "Process",
-                use_container_width=True
+        st.error(
+            "Unable to read the WhatsApp chat file."
+        )
+
+        st.stop()
+
+
+    # ========================================================
+    # DATE RANGE
+    # ========================================================
+
+    st.subheader(
+        "Select Date Range"
+    )
+
+
+    # --------------------------------------------------------
+    # Current date
+    # --------------------------------------------------------
+
+    today = date.today()
+
+
+    # --------------------------------------------------------
+    # Five years ago
+    #
+    # relativedelta handles leap years correctly.
+    #
+    # Example:
+    # 29/02/2024 -> 28/02/2019
+    # --------------------------------------------------------
+
+    five_years_ago = (
+        today - relativedelta(years=5)
+    )
+
+
+    # ========================================================
+    # DATE PICKERS
+    # ========================================================
+
+    col1, col2 = st.columns(2)
+
+
+    with col1:
+
+        start_date = st.date_input(
+
+            "Start Date",
+
+            value=today,
+
+            min_value=five_years_ago,
+
+            max_value=today
+
+        )
+
+
+    with col2:
+
+        end_date = st.date_input(
+
+            "End Date",
+
+            value=today,
+
+            min_value=five_years_ago,
+
+            max_value=today
+
+        )
+
+
+    # ========================================================
+    # PROCESS BUTTON
+    # ========================================================
+
+    if st.button(
+
+        "Process",
+
+        type="primary",
+
+        use_container_width=True
+
+    ):
+
+
+        # ----------------------------------------------------
+        # Validate dates
+        # ----------------------------------------------------
+
+        if start_date > end_date:
+
+            st.error(
+                "Start Date cannot be after End Date."
             )
 
-        if process_clicked:
-
-            # ----------------------------------------------
-            # Validate dates
-            # ----------------------------------------------
-
-            if start_date > end_date:
-
-                st.error(
-                    "Start Date cannot be after End Date."
-                )
-
-                st.stop()
+            st.stop()
 
 
-            # ----------------------------------------------
-            # Parse ZIP
-            # ----------------------------------------------
+        # ----------------------------------------------------
+        # Filter chat
+        # ----------------------------------------------------
 
-            with st.spinner(
-                "Processing..."
-            ):
+        filtered_df = df[
 
-                try:
+            (df["date"] >= start_date) &
 
-                    df = parse_whatsapp_chat(
-                        uploaded_file
-                    )
+            (df["date"] <= end_date)
 
-                except Exception:
-
-                    st.error(
-                        "Unable to read the WhatsApp chat file."
-                    )
-
-                    st.stop()
+        ].copy()
 
 
-                # ------------------------------------------
-                # Filter messages
-                # ------------------------------------------
+        # ----------------------------------------------------
+        # Check for messages
+        # ----------------------------------------------------
 
-                filtered_df = df[
+        if filtered_df.empty:
 
-                    (df["date"] >= start_date) &
+            st.error(
+                "No messages found for the selected date range."
+            )
 
-                    (df["date"] <= end_date)
-
-                ].copy()
-
-
-                if filtered_df.empty:
-
-                    st.error(
-                        "No messages found for the selected date range."
-                    )
-
-                    st.stop()
+            st.stop()
 
 
-                # ------------------------------------------
-                # Create Excel
-                # ------------------------------------------
+        # ====================================================
+        # CREATE EXCEL
+        # ====================================================
 
-                excel_file = create_excel(
+        excel_file = create_excel(
 
-                    filtered_df,
+            filtered_df,
 
-                    start_date,
+            start_date,
 
-                    end_date
+            end_date
 
-                )
-
-
-                # ------------------------------------------
-                # Filename
-                # ------------------------------------------
-
-                filename = (
-
-                    "WhatsApp_Message_Count_"
-
-                    f"{start_date.strftime('%Y%m%d')}"
-
-                    "_to_"
-
-                    f"{end_date.strftime('%Y%m%d')}"
-
-                    ".xlsx"
-
-                )
+        )
 
 
-                # ------------------------------------------
-                # Automatic download
-                # ------------------------------------------
+        # ====================================================
+        # FILE NAME
+        # ====================================================
 
-                # Streamlit requires a download element
-                # to transfer a generated file to the browser.
-                # This creates the download automatically
-                # after Process is clicked.
+        filename = (
 
-                import base64
+            "WhatsApp_Message_Count_"
 
-                b64 = base64.b64encode(
-                    excel_file.getvalue()
-                ).decode()
+            f"{start_date.strftime('%Y%m%d')}_"
 
+            "to_"
 
-                download_link = f"""
-                <a id="download"
-                   href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}"
-                   download="{filename}">
-                </a>
+            f"{end_date.strftime('%Y%m%d')}"
 
-                <script>
-                    document.getElementById("download").click();
-                </script>
-                """
+            ".xlsx"
+
+        )
 
 
-                st.markdown(
-                    download_link,
-                    unsafe_allow_html=True
-                )
+        # ====================================================
+        # DOWNLOAD
+        # ====================================================
+
+        st.download_button(
+
+            label="Download Excel",
+
+            data=excel_file,
+
+            file_name=filename,
+
+            mime=(
+
+                "application/vnd.openxmlformats-officedocument."
+
+                "spreadsheetml.sheet"
+
+            ),
+
+            use_container_width=True
+
+        )
