@@ -103,6 +103,13 @@ if files:
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             for name, df in sheets.items():
                 df.to_excel(writer, sheet_name=name, index=False)
+                ws = writer.sheets[name]
+                for row in ws.iter_rows():
+                    for cell in row:
+                        cell.number_format = "@"  # Excel "Text" format
+                        if cell.value is not None:
+                            cell.value = str(cell.value)
+                            cell.data_type = "s"  # stored as a string, never a number
         st.download_button(
             "Download Excel",
             data=buf.getvalue(),
@@ -111,4 +118,4 @@ if files:
         )
         first_name = next(iter(sheets))
         st.subheader(f"Preview: {first_name}")
-        st.dataframe(sheets[first_name].head(50))
+        st.dataframe(sheets[first_name].head(50), hide_index=True)
