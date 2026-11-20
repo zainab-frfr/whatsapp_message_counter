@@ -1,6 +1,8 @@
 import io
 import re
+import shutil
 import zipfile
+from pathlib import PurePosixPath
 
 import pandas as pd
 import streamlit as st
@@ -13,7 +15,7 @@ HEADER = re.compile(
 AUDIO_EXT = r"opus|aac|mp3|m4a|amr|ogg|wav|mmr|3gp|wma|flac"
 AUDIO = re.compile(rf"^(.+?\.(?:{AUDIO_EXT}))\s+\(file attached\)$", re.I)
 ATTACH = re.compile(r"\(file attached\)\s*$", re.I)
-COLUMNS = ["Audio File", "Text", "Sender", "Timestamp"]
+COLUMNS = ["Audio File", "Text", "Sender", "Timestamp", "Renamed File"]
 
 
 def parse_chat(text):
@@ -63,6 +65,34 @@ def build_rows(messages):
     return rows
 
 
+def clean_name(text):
+    """Make text safe to use as a file name."""
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text[:100]
+
+
+def add_renamed(rows):
+    """Add a 5th value per row: new file name = first line of text + original extension.
+    Audio with no text keeps its original name. Duplicate names get _2, _3, ..."""
+    used, out = set(), []
+    for audio, text, sender, ts in rows:
+        new = ""
+        if audio:
+            ext = PurePosixPath(audio).suffix
+            stem = clean_name(text) if text else ""
+            if stem:
+                new, n = stem + ext, 2
+                while new.lower() in used:
+                    new = f"{stem}_{n}{ext}"
+                    n += 1
+            else:
+                new = audio
+            used.add(new.lower())
+        out.append([audio, text, sender, ts, new])
+    return out
+
+
 def safe_sheet_name(name, used):
     base = re.sub(r"[\[\]:*?/\\]", "", name.rsplit(".", 1)[0])[:28] or "Sheet"
     candidate, n = base, 2
@@ -73,13 +103,51 @@ def safe_sheet_name(name, used):
     return candidate
 
 
+def make_excel(sheets):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for name, df in sheets.items():
+            df.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.number_format = "@"  # Excel "Text" format
+                    if cell.value is not None:
+                        cell.value = str(cell.value)
+                        cell.data_type = "s"  # stored as a string, never a number
+    return buf.getvalue()
+
+
+def build_zip(chats, excel_bytes):
+    """Zip = Excel at the root + one folder per chat holding the renamed audio."""
+    buf = io.BytesIO()
+    missing = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as out:  # audio is already compressed
+        out.writestr("whatsapp_audio_text.xlsx", excel_bytes)
+        for sheet, f, rows in chats:
+            with zipfile.ZipFile(f) as zin:
+                by_name = {
+                    PurePosixPath(n).name: n for n in zin.namelist() if not n.endswith("/")
+                }
+                for audio, _, _, _, new in rows:
+                    if not audio:
+                        continue
+                    src = by_name.get(audio)
+                    if src is None:
+                        missing += 1
+                        continue
+                    with zin.open(src) as s, out.open(f"{sheet}/{new}", "w") as d:
+                        shutil.copyfileobj(s, d)
+    return buf.getvalue(), missing
+
+
 st.title("WhatsApp Audio ↔ Text to Excel")
 st.caption("Upload one or more Android WhatsApp chat exports (.zip).")
 
 files = st.file_uploader("Chat zip files", type="zip", accept_multiple_files=True)
 
 if files:
-    sheets, used = {}, set()
+    sheets, chats, used = {}, [], set()
     for f in files:
         try:
             zf = zipfile.ZipFile(f)
@@ -94,28 +162,41 @@ if files:
             st.warning(f"{f.name}: no .txt chat file found, skipped.")
             continue
         text = zf.read(txts[0]).decode("utf-8", errors="ignore")
-        rows = build_rows(parse_chat(text))
-        sheets[safe_sheet_name(f.name, used)] = pd.DataFrame(rows, columns=COLUMNS)
+        rows = add_renamed(build_rows(parse_chat(text)))
+        sheet = safe_sheet_name(f.name, used)
+        sheets[sheet] = pd.DataFrame(rows, columns=COLUMNS)
+        chats.append((sheet, f, rows))
         st.write(f"**{f.name}**: {len(rows)} rows")
 
     if sheets:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            for name, df in sheets.items():
-                df.to_excel(writer, sheet_name=name, index=False)
-                ws = writer.sheets[name]
-                for row in ws.iter_rows():
-                    for cell in row:
-                        cell.number_format = "@"  # Excel "Text" format
-                        if cell.value is not None:
-                            cell.value = str(cell.value)
-                            cell.data_type = "s"  # stored as a string, never a number
+        excel_bytes = make_excel(sheets)
         st.download_button(
-            "Download Excel",
-            data=buf.getvalue(),
+            "Download Excel only",
+            data=excel_bytes,
             file_name="whatsapp_audio_text.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         first_name = next(iter(sheets))
         st.subheader(f"Preview: {first_name}")
         st.dataframe(sheets[first_name].head(50), hide_index=True)
+
+        st.divider()
+        sig = tuple((f.name, f.size) for f in files)
+        if st.button("Build zip with renamed audio + Excel"):
+            with st.spinner("Building zip..."):
+                data, missing = build_zip(chats, excel_bytes)
+            st.session_state["zip"] = (sig, data, missing)
+
+        saved = st.session_state.get("zip")
+        if saved and saved[0] == sig:
+            if saved[2]:
+                st.warning(
+                    f"{saved[2]} audio file(s) named in the chat were not found inside "
+                    "the zip (exported without media?), so they are not in the output zip."
+                )
+            st.download_button(
+                "Download renamed audio + Excel (.zip)",
+                data=saved[1],
+                file_name="renamed_audio.zip",
+                mime="application/zip",
+            )
